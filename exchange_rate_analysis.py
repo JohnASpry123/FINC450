@@ -168,6 +168,25 @@ def plot_series_svg(
         x_position = scale_x(tick_dates[0])
         year_tick_labels.append((year, x_position))
 
+    y_tick_count = 10
+    y_step = (max_y - min_y) / y_tick_count
+    y_ticks = [min_y + y_step * i for i in range(y_tick_count + 1)]
+    y_tick_labels = [(value, scale_y(value)) for value in y_ticks]
+
+    vertical_gridlines = "\n".join(
+        f"  <line x1=\"{x_position:.2f}\" y1=\"{padding}\" x2=\"{x_position:.2f}\" y2=\"{height - padding}\" stroke=\"#e0e0e0\" stroke-width=\"1\" />"
+        for _, x_position in year_tick_labels
+    )
+    horizontal_gridlines = "\n".join(
+        f"  <line x1=\"{padding}\" y1=\"{y_position:.2f}\" x2=\"{width - padding}\" y2=\"{y_position:.2f}\" stroke=\"#e0e0e0\" stroke-width=\"1\" />"
+        for _, y_position in y_tick_labels
+    )
+
+    y_axis_labels = "\n".join(
+        f"  <text x=\"{padding - 8}\" y=\"{y_position + 4:.2f}\" font-size=\"12\" text-anchor=\"end\" fill=\"#444\">{value:.4f}</text>"
+        for value, y_position in y_tick_labels
+    )
+
     tick_label_elements = "\n".join(
         f"  <text x=\"{x_position:.2f}\" y=\"{height - padding / 2}\" font-size=\"12\" text-anchor=\"middle\" fill=\"#444\">{year}</text>"
         for year, x_position in year_tick_labels
@@ -175,9 +194,12 @@ def plot_series_svg(
 
     svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">
   <rect width="100%" height="100%" fill="white" />
+{vertical_gridlines}
+{horizontal_gridlines}
   <text x="{width / 2}" y="{padding / 2}" font-size="20" text-anchor="middle" fill="#222">{title}</text>
   <polyline points="{polyline_points}" fill="none" stroke="#2f6fb0" stroke-width="2" />
 {tick_label_elements}
+{y_axis_labels}
   <text x="{width / 2}" y="{height - 10}" font-size="14" text-anchor="middle" fill="#222">Year</text>
   <text x="20" y="{height / 2}" font-size="14" text-anchor="middle" fill="#222" transform="rotate(-90, 20, {height / 2})">Exchange Rate</text>
   <text x="{padding}" y="{padding}" font-size="12" fill="#444">Max: {max_y:.4f}</text>
