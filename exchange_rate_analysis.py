@@ -153,13 +153,33 @@ def plot_series_svg(
     title = f"{currency} Weekly Exchange Rate"
     start_date = dates[0].isoformat()
     end_date = dates[-1].isoformat()
+    start_year = dates[0].year
+    end_year = dates[-1].year
+    tick_start_year = (start_year // 5) * 5
+    year_ticks = list(range(tick_start_year, end_year + 1, 5))
+    if year_ticks and year_ticks[0] < start_year:
+        year_ticks = year_ticks[1:]
+
+    year_tick_labels = []
+    for year in year_ticks:
+        tick_dates = [index for index, date_value in enumerate(dates) if date_value.year == year]
+        if not tick_dates:
+            continue
+        x_position = scale_x(tick_dates[0])
+        year_tick_labels.append((year, x_position))
+
+    tick_label_elements = "\n".join(
+        f"  <text x=\"{x_position:.2f}\" y=\"{height - padding / 2}\" font-size=\"12\" text-anchor=\"middle\" fill=\"#444\">{year}</text>"
+        for year, x_position in year_tick_labels
+    )
 
     svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">
   <rect width="100%" height="100%" fill="white" />
   <text x="{width / 2}" y="{padding / 2}" font-size="20" text-anchor="middle" fill="#222">{title}</text>
   <polyline points="{polyline_points}" fill="none" stroke="#2f6fb0" stroke-width="2" />
-  <text x="{padding}" y="{height - padding / 2}" font-size="12" fill="#444">{start_date}</text>
-  <text x="{width - padding}" y="{height - padding / 2}" font-size="12" text-anchor="end" fill="#444">{end_date}</text>
+{tick_label_elements}
+  <text x="{width / 2}" y="{height - 10}" font-size="14" text-anchor="middle" fill="#222">Year</text>
+  <text x="20" y="{height / 2}" font-size="14" text-anchor="middle" fill="#222" transform="rotate(-90, 20, {height / 2})">Exchange Rate</text>
   <text x="{padding}" y="{padding}" font-size="12" fill="#444">Max: {max_y:.4f}</text>
   <text x="{padding}" y="{padding + 16}" font-size="12" fill="#444">Min: {min_y:.4f}</text>
 </svg>
