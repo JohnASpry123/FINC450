@@ -23,3 +23,14 @@ FINC 450 for Downloading Exchange Rate Data from FRED
    ```
 
 The resulting spreadsheet will be saved as `exchange_rates.xlsx`.
+
+## Weekly exchange rate analysis
+
+To calculate weekly percentage changes, summary statistics, and generate per-currency
+plots for the Bloomberg weekly dataset:
+
+```bash
+python exchange_rate_analysis.py
+```
+
+Outputs are saved in the `outputs/` directory (including plots in `outputs/plots`).
