@@ -34,3 +34,18 @@ python exchange_rate_analysis.py
 ```
 
 Outputs are saved in the `outputs/` directory (including plots in `outputs/plots`).
+
+## Load the Bloomberg weekly XLSX with full precision
+
+The repository includes `Bloomberg Weekly Exchange Rates since 2000 1 31 2026.xlsx`.
+Use the loader below to export a CSV copy that preserves every cell value as text
+(no float coercion):
+
+```bash
+python bloomberg_weekly_loader.py \
+  --xlsx "Bloomberg Weekly Exchange Rates since 2000 1 31 2026.xlsx" \
+  --output outputs/bloomberg_weekly_exchange_rates.csv
+```
+
+The generated CSV is saved to `outputs/bloomberg_weekly_exchange_rates.csv` for
+analysis or ingestion in other tools.
