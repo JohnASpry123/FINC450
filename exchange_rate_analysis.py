@@ -42,7 +42,7 @@ def load_exchange_rates(csv_path: str) -> Tuple[List[dt.date], Dict[str, List[Op
     return dates, data
 
 
-def compute_weekly_percent_changes(
+def compute_weekly_log_changes(
     dates: List[dt.date],
     data: Dict[str, List[Optional[float]]],
 ) -> Dict[str, List[Tuple[dt.date, Optional[float]]]]:
@@ -55,11 +55,11 @@ def compute_weekly_percent_changes(
                 series.append((date_value, None))
                 previous = current
                 continue
-            if previous == 0:
+            if previous <= 0 or current <= 0:
                 series.append((date_value, None))
                 previous = current
                 continue
-            change = ((current / previous) - 1) * 100
+            change = (math.log(current) - math.log(previous)) * 100
             series.append((date_value, change))
             previous = current
         percent_changes[currency] = series
@@ -67,12 +67,20 @@ def compute_weekly_percent_changes(
 
 
 def summarize_percent_changes(
-    percent_changes: Dict[str, List[Tuple[dt.date, Optional[float]]]]
+    percent_changes: Dict[str, List[Tuple[dt.date, Optional[float]]]],
+    start_date: Optional[dt.date] = None,
+    end_date: Optional[dt.date] = None,
 ) -> Dict[str, Dict[str, float]]:
     summary: Dict[str, Dict[str, float]] = {}
     for currency, series in percent_changes.items():
-        values = [value for _, value in series if value is not None]
-        if not values:
+        values = [
+            value
+            for date_value, value in series
+            if value is not None
+            and (start_date is None or date_value >= start_date)
+            and (end_date is None or date_value <= end_date)
+        ]
+        if len(values) < 2:
             continue
         summary[currency] = {
             "average_weekly_percent_change": statistics.fmean(values),
@@ -110,6 +118,43 @@ def write_summary_csv(summary: Dict[str, Dict[str, float]], output_path: pathlib
                     f"{stats['std_dev_weekly_percent_change']:.6f}",
                 ]
             )
+
+
+def write_correlation_matrix_csv(
+    percent_changes: Dict[str, List[Tuple[dt.date, Optional[float]]]],
+    output_path: pathlib.Path,
+) -> None:
+    currencies = list(percent_changes.keys())
+    values_by_currency = {
+        currency: [value for _, value in series]
+        for currency, series in percent_changes.items()
+    }
+
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["Currency", *currencies])
+        for currency in currencies:
+            row = [currency]
+            base_values = values_by_currency[currency]
+            for other_currency in currencies:
+                other_values = values_by_currency[other_currency]
+                paired = [
+                    (left, right)
+                    for left, right in zip(base_values, other_values)
+                    if left is not None and right is not None
+                ]
+                if len(paired) < 2:
+                    row.append("")
+                    continue
+                left_values = [pair[0] for pair in paired]
+                right_values = [pair[1] for pair in paired]
+                try:
+                    correlation = statistics.correlation(left_values, right_values)
+                except statistics.StatisticsError:
+                    row.append("")
+                    continue
+                row.append(f"{correlation:.6f}")
+            writer.writerow(row)
 
 
 def plot_series_svg(
@@ -224,18 +269,29 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     dates, data = load_exchange_rates(DATA_FILE)
-    percent_changes = compute_weekly_percent_changes(dates, data)
-    summary = summarize_percent_changes(percent_changes)
+    percent_changes = compute_weekly_log_changes(dates, data)
+    summary_full = summarize_percent_changes(percent_changes)
+    summary_crisis = summarize_percent_changes(
+        percent_changes,
+        start_date=dt.date(2008, 1, 1),
+        end_date=dt.date(2009, 12, 31),
+    )
 
-    summary_path = OUTPUT_DIR / "weekly_percent_change_stats.csv"
-    pct_path = OUTPUT_DIR / "weekly_percent_changes.csv"
+    summary_path = OUTPUT_DIR / "weekly_log_change_stats_full.csv"
+    summary_crisis_path = OUTPUT_DIR / "weekly_log_change_stats_2008_2009.csv"
+    pct_path = OUTPUT_DIR / "weekly_log_changes.csv"
+    correlation_path = OUTPUT_DIR / "weekly_log_change_correlation.csv"
 
-    write_summary_csv(summary, summary_path)
+    write_summary_csv(summary_full, summary_path)
+    write_summary_csv(summary_crisis, summary_crisis_path)
     write_percent_changes_csv(dates, percent_changes, pct_path)
+    write_correlation_matrix_csv(percent_changes, correlation_path)
     plot_exchange_rates(dates, data, PLOTS_DIR)
 
     print(f"Saved summary statistics to {summary_path}")
+    print(f"Saved 2008-2009 summary statistics to {summary_crisis_path}")
     print(f"Saved weekly percent changes to {pct_path}")
+    print(f"Saved correlation matrix to {correlation_path}")
     print(f"Saved plots to {PLOTS_DIR}")
 
 
