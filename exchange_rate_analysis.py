@@ -1,4 +1,7 @@
+import argparse
 import csv
+import json
+from html import escape
 import datetime as dt
 import math
 import pathlib
@@ -6,56 +9,25 @@ import statistics
 from typing import Dict, List, Optional, Tuple
 
 
-DATA_FILE = "Bloomberg Weekly Exchange Rates since 2000 1 28 2026.cvs.csv"
-OUTPUT_DIR = pathlib.Path("outputs")
+from fx_data import (DEFAULT_INPUT, ROOT, DataQualityError, load_exchange_rates,
+                     parse_float, provenance, validate_series)
+
+DATA_FILE = DEFAULT_INPUT
+OUTPUT_DIR = ROOT / "outputs"
 PLOTS_DIR = OUTPUT_DIR / "plots"
-
-
-def parse_float(value: str) -> Optional[float]:
-    if value is None:
-        return None
-    cleaned = value.replace("$", "").replace(",", "").strip()
-    if not cleaned:
-        return None
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-
-def load_exchange_rates(csv_path: str) -> Tuple[List[dt.date], Dict[str, List[Optional[float]]]]:
-    with open(csv_path, newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        currencies = [field for field in reader.fieldnames if field != "Date"]
-        dates: List[dt.date] = []
-        data: Dict[str, List[Optional[float]]] = {currency: [] for currency in currencies}
-        for row in reader:
-            if row.get("Date") in (None, "", "(auto)"):
-                continue
-            try:
-                date_value = dt.datetime.strptime(row["Date"], "%m/%d/%Y").date()
-            except ValueError:
-                continue
-            dates.append(date_value)
-            for currency in currencies:
-                data[currency].append(parse_float(row.get(currency, "")))
-    return dates, data
 
 
 def compute_weekly_log_changes(
     dates: List[dt.date],
     data: Dict[str, List[Optional[float]]],
 ) -> Dict[str, List[Tuple[dt.date, Optional[float]]]]:
+    validate_series(dates, data)
     percent_changes: Dict[str, List[Tuple[dt.date, Optional[float]]]] = {}
     for currency, values in data.items():
         series: List[Tuple[dt.date, Optional[float]]] = []
         previous: Optional[float] = None
         for date_value, current in zip(dates, values):
             if current is None or previous is None:
-                series.append((date_value, None))
-                previous = current
-                continue
-            if previous <= 0 or current <= 0:
                 series.append((date_value, None))
                 previous = current
                 continue
@@ -80,11 +52,10 @@ def summarize_percent_changes(
             and (start_date is None or date_value >= start_date)
             and (end_date is None or date_value <= end_date)
         ]
-        if len(values) < 2:
-            continue
         summary[currency] = {
-            "average_weekly_percent_change": statistics.fmean(values),
-            "std_dev_weekly_percent_change": statistics.stdev(values),
+            "observations": len(values),
+            "average_weekly_percent_change": statistics.fmean(values) if values else None,
+            "std_dev_weekly_percent_change": statistics.stdev(values) if len(values) > 1 else None,
         }
     return summary
 
@@ -96,65 +67,66 @@ def write_percent_changes_csv(
 ) -> None:
     currencies = list(percent_changes.keys())
     with output_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
+        writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(["Date", *currencies])
         for idx, date_value in enumerate(dates):
             row = [date_value.isoformat()]
             for currency in currencies:
                 value = percent_changes[currency][idx][1]
-                row.append("" if value is None else f"{value:.6f}")
+                row.append("" if value is None else f"{value:.17g}")
             writer.writerow(row)
 
 
 def write_summary_csv(summary: Dict[str, Dict[str, float]], output_path: pathlib.Path) -> None:
     with output_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["Currency", "Average Weekly % Change", "Std Dev Weekly % Change"])
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(["Currency", "Observations", "Average Weekly Log Change (%)", "Std Dev Weekly Log Change (%)"])
         for currency, stats in summary.items():
             writer.writerow(
                 [
                     currency,
-                    f"{stats['average_weekly_percent_change']:.6f}",
-                    f"{stats['std_dev_weekly_percent_change']:.6f}",
+                    stats["observations"],
+                    "" if stats["average_weekly_percent_change"] is None else f"{stats['average_weekly_percent_change']:.6f}",
+                    "" if stats["std_dev_weekly_percent_change"] is None else f"{stats['std_dev_weekly_percent_change']:.6f}",
                 ]
             )
 
 
-def write_correlation_matrix_csv(
-    percent_changes: Dict[str, List[Tuple[dt.date, Optional[float]]]],
-    output_path: pathlib.Path,
-) -> None:
-    currencies = list(percent_changes.keys())
-    values_by_currency = {
-        currency: [value for _, value in series]
-        for currency, series in percent_changes.items()
-    }
+def correlation_matrices(changes):
+    """Pair on actual dates, never row position; also return pairwise sample sizes."""
+    by_date = {}
+    for currency, series in changes.items():
+        mapping = dict(series)
+        if len(mapping) != len(series):
+            raise DataQualityError(f"{currency}: duplicate return dates.")
+        by_date[currency] = mapping
+    correlations, counts = {}, {}
+    for currency, left in by_date.items():
+        correlations[currency], counts[currency] = {}, {}
+        for other, right in by_date.items():
+            pairs = [(left[d], right[d]) for d in sorted(left.keys() & right.keys())
+                     if left[d] is not None and right[d] is not None]
+            counts[currency][other] = len(pairs)
+            try:
+                value = statistics.correlation([p[0] for p in pairs], [p[1] for p in pairs])
+            except statistics.StatisticsError:
+                value = None  # Fewer than two pairs or constant series.
+            correlations[currency][other] = value
+    return correlations, counts
 
+
+def write_matrix_csv(matrix, output_path):
+    currencies = list(matrix)
     with output_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
+        writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(["Currency", *currencies])
         for currency in currencies:
-            row = [currency]
-            base_values = values_by_currency[currency]
-            for other_currency in currencies:
-                other_values = values_by_currency[other_currency]
-                paired = [
-                    (left, right)
-                    for left, right in zip(base_values, other_values)
-                    if left is not None and right is not None
-                ]
-                if len(paired) < 2:
-                    row.append("")
-                    continue
-                left_values = [pair[0] for pair in paired]
-                right_values = [pair[1] for pair in paired]
-                try:
-                    correlation = statistics.correlation(left_values, right_values)
-                except statistics.StatisticsError:
-                    row.append("")
-                    continue
-                row.append(f"{correlation:.6f}")
-            writer.writerow(row)
+            writer.writerow([currency, *["" if matrix[currency][c] is None
+                                         else matrix[currency][c] for c in currencies]])
+
+
+def write_correlation_matrix_csv(percent_changes, output_path):
+    write_matrix_csv(correlation_matrices(percent_changes)[0], output_path)
 
 
 def plot_series_svg(
@@ -164,16 +136,15 @@ def plot_series_svg(
     output_path: pathlib.Path,
     width: int = 1200,
     height: int = 600,
-    padding: int = 50,
+    padding: int = 90,
 ) -> None:
     points = [(idx, value) for idx, value in enumerate(values) if value is not None]
     if not points:
         return
 
-    x_values = [point[0] for point in points]
     y_values = [point[1] for point in points]
 
-    min_x, max_x = min(x_values), max(x_values)
+    min_x, max_x = 0, len(dates) - 1
     min_y, max_y = min(y_values), max(y_values)
 
     if math.isclose(min_y, max_y):
@@ -191,13 +162,22 @@ def plot_series_svg(
     def scale_y(y_value: float) -> float:
         return padding + (max_y - y_value) / (max_y - min_y) * plot_height
 
-    polyline_points = " ".join(
-        f"{scale_x(x_value):.2f},{scale_y(y_value):.2f}" for x_value, y_value in points
+    # Separate segments at missing quotes; never draw across unavailable observations.
+    segments, segment = [], []
+    for idx, value in enumerate(values):
+        if value is None:
+            if segment:
+                segments.append(segment)
+                segment = []
+        else:
+            segment.append(f"{scale_x(idx):.2f},{scale_y(value):.2f}")
+    if segment:
+        segments.append(segment)
+    polylines = "\n".join(
+        '<polyline points="' + ' '.join(points) + '" fill="none" stroke="#2f6fb0" stroke-width="2" />'
+        for points in segments
     )
-
-    title = f"{currency} Weekly Exchange Rate"
-    start_date = dates[0].isoformat()
-    end_date = dates[-1].isoformat()
+    title = escape(f"{currency} Weekly Exchange Rate | {dates[0]} to {dates[-1]}")
     start_year = dates[0].year
     end_year = dates[-1].year
     tick_start_year = (start_year // 5) * 5
@@ -228,7 +208,7 @@ def plot_series_svg(
     )
 
     y_axis_labels = "\n".join(
-        f"  <text x=\"{padding - 8}\" y=\"{y_position + 4:.2f}\" font-size=\"12\" text-anchor=\"end\" fill=\"#444\">{value:.4f}</text>"
+        f"  <text x=\"{padding - 8}\" y=\"{y_position + 4:.2f}\" font-size=\"12\" text-anchor=\"end\" fill=\"#444\">{value:.6g}</text>"
         for value, y_position in y_tick_labels
     )
 
@@ -242,13 +222,13 @@ def plot_series_svg(
 {vertical_gridlines}
 {horizontal_gridlines}
   <text x="{width / 2}" y="{padding / 2}" font-size="20" text-anchor="middle" fill="#222">{title}</text>
-  <polyline points="{polyline_points}" fill="none" stroke="#2f6fb0" stroke-width="2" />
+{polylines}
 {tick_label_elements}
 {y_axis_labels}
   <text x="{width / 2}" y="{height - 10}" font-size="14" text-anchor="middle" fill="#222">Year</text>
-  <text x="20" y="{height / 2}" font-size="14" text-anchor="middle" fill="#222" transform="rotate(-90, 20, {height / 2})">Exchange Rate</text>
-  <text x="{padding}" y="{padding}" font-size="12" fill="#444">Max: {max_y:.4f}</text>
-  <text x="{padding}" y="{padding + 16}" font-size="12" fill="#444">Min: {min_y:.4f}</text>
+  <text x="20" y="{height / 2}" font-size="14" text-anchor="middle" fill="#222" transform="rotate(-90, 20, {height / 2})">USD quote (source scale)</text>
+  <text x="{padding}" y="{padding}" font-size="12" fill="#444">Max: {max_y:.6g}</text>
+  <text x="{padding}" y="{padding + 16}" font-size="12" fill="#444">Min: {min_y:.6g}</text>
 </svg>
 """
     output_path.write_text(svg_content, encoding="utf-8")
@@ -265,34 +245,37 @@ def plot_exchange_rates(
         plot_series_svg(dates, values, currency, output_path)
 
 
-def main() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    dates, data = load_exchange_rates(DATA_FILE)
-    percent_changes = compute_weekly_log_changes(dates, data)
-    summary_full = summarize_percent_changes(percent_changes)
-    summary_crisis = summarize_percent_changes(
-        percent_changes,
-        start_date=dt.date(2008, 1, 1),
-        end_date=dt.date(2009, 12, 31),
-    )
-
-    summary_path = OUTPUT_DIR / "weekly_log_change_stats_full.csv"
-    summary_crisis_path = OUTPUT_DIR / "weekly_log_change_stats_2008_2009.csv"
-    pct_path = OUTPUT_DIR / "weekly_log_changes.csv"
-    correlation_path = OUTPUT_DIR / "weekly_log_change_correlation.csv"
-
-    write_summary_csv(summary_full, summary_path)
-    write_summary_csv(summary_crisis, summary_crisis_path)
-    write_percent_changes_csv(dates, percent_changes, pct_path)
-    write_correlation_matrix_csv(percent_changes, correlation_path)
-    plot_exchange_rates(dates, data, PLOTS_DIR)
-
-    print(f"Saved summary statistics to {summary_path}")
-    print(f"Saved 2008-2009 summary statistics to {summary_crisis_path}")
-    print(f"Saved weekly percent changes to {pct_path}")
-    print(f"Saved correlation matrix to {correlation_path}")
-    print(f"Saved plots to {PLOTS_DIR}")
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(description="Validated weekly Bloomberg log-return analysis.")
+    parser.add_argument("--input", type=pathlib.Path, default=DATA_FILE)
+    parser.add_argument("--output-dir", type=pathlib.Path, default=OUTPUT_DIR)
+    parser.add_argument("--as-of", type=dt.date.fromisoformat, default=None,
+                        help="ISO assessment date; defaults to today's UTC date, never an observation date.")
+    parser.add_argument("--max-age-days", type=int, default=14)
+    parser.add_argument("--require-current", action="store_true", help="Fail if observations are stale.")
+    parser.add_argument("--strict-missing", action="store_true", help="Fail on any missing quote.")
+    args = parser.parse_args(argv)
+    dates, data = load_exchange_rates(args.input, strict_missing=args.strict_missing)
+    metadata = provenance(args.input, dates, data, as_of=args.as_of, max_age_days=args.max_age_days)
+    if metadata["stale"]:
+        message = f"HISTORICAL DATA: observations end {dates[-1]}, {metadata['age_days']} days before {metadata['as_of']}."
+        if args.require_current:
+            parser.error(message)
+        print(message)
+    output = args.output_dir
+    output.mkdir(parents=True, exist_ok=True)
+    changes = compute_weekly_log_changes(dates, data)
+    write_summary_csv(summarize_percent_changes(changes), output / "weekly_log_change_stats_full.csv")
+    write_summary_csv(summarize_percent_changes(changes, dt.date(2008, 1, 1), dt.date(2009, 12, 31)),
+                      output / "weekly_log_change_stats_2008_2009.csv")
+    write_percent_changes_csv(dates, changes, output / "weekly_log_changes.csv")
+    correlations, counts = correlation_matrices(changes)
+    write_matrix_csv(correlations, output / "weekly_log_change_correlation.csv")
+    write_matrix_csv(counts, output / "weekly_log_change_correlation_counts.csv")
+    plot_exchange_rates(dates, data, output / "plots")
+    (output / "analysis_manifest.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    print(f"Saved log-return statistics, correlations, counts, metadata and plots to {output}")
+    print(f"Actual observations: {dates[0]} to {dates[-1]} ({len(dates)} weeks).")
 
 
 if __name__ == "__main__":
