@@ -1,0 +1,2 @@
+# Optional PNG figures and precision comparison; core analysis needs no packages.
+matplotlib==3.10.8

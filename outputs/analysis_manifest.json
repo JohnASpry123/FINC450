@@ -1,0 +1,43 @@
+{
+  "source_file": "Bloomberg Weekly Exchange Rates since 2000 1 31 2026.xlsx",
+  "source_sha256": "6bb7f12b9797b7a86c008f2885dbc36445e8c415bdf5d0ab99d1f60f8d7b1dd5",
+  "first_observation": "2000-01-07",
+  "last_observation": "2026-01-30",
+  "rows": 1361,
+  "currencies": 18,
+  "as_of": "2026-10-15",
+  "age_days": 258,
+  "max_age_days": 14,
+  "stale": true,
+  "method": "100 * (ln(S_t) - ln(S_t-1)); sample SD (ddof=1); pairwise Pearson correlation",
+  "quote_units": "USD quotes in source scale; currency-specific scale factors unverified",
+  "missing_quotes": {
+    "EURUSD": [],
+    "GBPUSD": [],
+    "JPYUSD": [],
+    "AUDUSD": [],
+    "CADUSD": [],
+    "CHFUSD": [],
+    "NZDUSD": [],
+    "BRLUSD": [],
+    "MXNUSD": [],
+    "ZARUSD": [],
+    "TRYUSD": [],
+    "CNYUSD": [
+      "2022-02-04",
+      "2022-10-07",
+      "2023-01-27",
+      "2023-10-06",
+      "2024-02-16"
+    ],
+    "INRUSD": [],
+    "IDRUSD": [
+      "2024-04-12"
+    ],
+    "KRWUSD": [],
+    "RUBUSD": [],
+    "SARUSD": [],
+    "LKRUSD": []
+  },
+  "precision_check": "Reject columns with >=98% cent-quantized quotes; heuristic, not proof of precision"
+}
